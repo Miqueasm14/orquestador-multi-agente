@@ -145,7 +145,7 @@ Los dos se crean con `create_react_agent` de LangGraph, cada uno con un prompt d
 
 El supervisor usa `with_structured_output` para devolver una decisión con tres campos: `next` (de tipo `Literal["investigador", "analista", "FINISH"]`), `instruccion` y `razon`. Su prompt plantea la pregunta: *"Dada la conversación actual, ¿quién debe intervenir ahora o es momento de finalizar?"*.
 
-La función `enrutar()` traduce esa decisión al nombre del nodo siguiente. Su tipo de retorno es `Literal["investigador", "analista", "sintesis"]`, y es la que usan las aristas condicionales (`add_conditional_edges`).
+La función `enrutar()` traduce esa decisión al nombre del nodo siguiente. Su tipo de retorno es `Literal["investigador", "analista", "sintesis"]`, y es la que usan las aristas condicionales (`add_conditional_edges`). Así, el flujo lo decide el supervisor en cada paso: el `Literal` garantiza que solo pueda elegir uno de los nodos existentes del grafo.
 
 **Rúbrica de validación.** Antes de responder `FINISH`, el supervisor verifica que:
 
