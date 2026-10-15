@@ -106,6 +106,75 @@ Se eligió una topología **jerárquica** (un supervisor que coordina a especial
 - **Trazabilidad:** cada aporte queda registrado en el estado con el agente que lo hizo y la instrucción que recibió, así se puede ver de dónde salió cada dato.
 - **Corte garantizado:** si los agentes no llegan a un resultado válido, el límite de pasos evita un bucle infinito de correcciones (ver "Condición de parada").
 
+## Lógica del StateGraph paso a paso
+
+### Cómo se arma el grafo (`construir_grafo()` en `graph.py`)
+
+```python
+grafo = StateGraph(AgentState)
+grafo.add_node("supervisor", nodo_supervisor)
+grafo.add_node("investigador", nodo_investigador)
+grafo.add_node("analista", nodo_analista)
+grafo.add_node("sintesis", nodo_sintesis)
+
+grafo.add_edge(START, "supervisor")                           # 1. todo empieza en el supervisor
+grafo.add_conditional_edges("supervisor", enrutar, {          # 2. el supervisor elige el siguiente nodo
+    "investigador": "investigador",
+    "analista": "analista",
+    "sintesis": "sintesis",
+})
+grafo.add_edge("investigador", "supervisor")                  # 3. los especialistas siempre
+grafo.add_edge("analista", "supervisor")                      #    devuelven el control al supervisor
+grafo.add_edge("sintesis", END)                               # 4. la síntesis cierra la conversación
+```
+
+| Arista | Tipo | Qué significa |
+|---|---|---|
+| `START → supervisor` | Fija | Toda consulta la recibe primero el supervisor |
+| `supervisor → investigador / analista / sintesis` | Condicional | La elige `enrutar()` según la decisión del supervisor |
+| `investigador → supervisor` | Fija | Después de buscar, el control vuelve al supervisor |
+| `analista → supervisor` | Fija | Después de calcular, el control vuelve al supervisor |
+| `sintesis → END` | Fija | La respuesta final termina la ejecución |
+
+Como los especialistas nunca se llaman entre sí y siempre vuelven al supervisor, el grafo forma un ciclo `supervisor ⇄ especialista` que se repite hasta que el supervisor decide terminar.
+
+### Qué lee y qué escribe cada nodo en el estado
+
+| Nodo | Lee del estado | Escribe en el estado |
+|---|---|---|
+| `supervisor` | La tarea original (`messages[0]`), `contribuciones` y `pasos` | `next_agent`, `instruccion` y `task_completed`, y agrega a `messages` su decisión con la justificación (salvo en el corte por `MAX_PASOS`, que no consulta al modelo) |
+| `investigador` | Solo `instruccion` | Agrega un aporte a `contribuciones`, agrega su respuesta a `messages` y suma 1 a `pasos` |
+| `analista` | `instruccion` y los aportes del investigador en `contribuciones` | Agrega un aporte a `contribuciones`, agrega su respuesta a `messages` y suma 1 a `pasos` |
+| `sintesis` | La tarea original y todas las `contribuciones` | Agrega la respuesta final a `messages` |
+
+`messages` (reducer `add_messages`) y `contribuciones` (reducer `operator.add`) **acumulan**: cada nodo agrega elementos sin borrar los anteriores. El resto de los campos se **reemplaza** con el último valor escrito.
+
+### Recorrido de la ejecución de ejemplo
+
+Así evoluciona el estado en la consulta del ejemplo (ver "Ejemplo de ejecución"):
+
+| Paso | Nodo | Qué hace | `next_agent` | `pasos` | `contribuciones` |
+|---|---|---|---|---|---|
+| 1 | `supervisor` | No hay aportes: falta el dato de la documentación | `investigador` | 0 | 0 |
+| 2 | `investigador` | Busca en el Vector DB: `maxBytes = 1_000_000`, `backupCount = 3` | — | 1 | 1 |
+| 3 | `supervisor` | Ya están los datos, falta el cálculo | `analista` | 1 | 1 |
+| 4 | `analista` | Calcula `1_000_000 × (3 + 1) = 4_000_000` bytes | — | 2 | 2 |
+| 5 | `supervisor` | Revisa la rúbrica: se cumple completa | `FINISH` | 2 | 2 |
+| 6 | `sintesis` | Redacta la respuesta final y el grafo llega a `END` | — | 2 | 2 |
+
+### Configuración del nodo supervisor
+
+| Elemento | Configuración |
+|---|---|
+| Modelo | `gemini-flash-lite-latest` con `temperature=0`, para que las decisiones sean lo más estables posible |
+| Formato de salida | `with_structured_output(DecisionSupervisor)`: el modelo no responde texto libre, sino un objeto validado con `next`, `instruccion` y `razon` |
+| Opciones posibles | `next` es `Literal["investigador", "analista", "FINISH"]`: el modelo no puede elegir un agente que no exista |
+| Entrada | Mensaje de sistema con `SUPERVISOR_PROMPT` (roles, reglas de delegación, rúbrica y aportes registrados hasta ahora) y mensaje humano con la tarea original |
+| Ruteo | `enrutar()` convierte `next` en el nombre de nodo: `investigador`, `analista` o `sintesis` cuando la decisión es `FINISH` |
+| Corte de seguridad | Si `pasos` llega a `MAX_PASOS = 6`, devuelve `FINISH` sin consultar al modelo |
+
+El supervisor no recibe el historial de mensajes completo: recibe la tarea original más el registro de `contribuciones`. Así decide con la información justa: qué se pidió y qué aportó ya cada especialista.
+
 ## Cómo funciona
 
 | Pedido de la consigna | Dónde está |
